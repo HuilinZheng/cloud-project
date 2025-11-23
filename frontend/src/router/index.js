@@ -6,6 +6,7 @@ import LoginView from '../views/LoginView.vue';
 import RegisterView from '../views/RegisterView.vue';
 import DroneListView from '../views/DroneListView.vue';
 import DroneDetailView from '../views/DroneDetailView.vue';
+import GameView from '../views/GameView.vue'; // 引入新组件
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL), // for Vue 3 Vite projects
@@ -14,8 +15,13 @@ const router = createRouter({
   routes: [
     {
       path: '/',
-      name: 'home',
-      component: HomeView
+      redirect: '/game'
+    },
+    {
+      path: '/game',
+      name: 'game',
+      component: GameView,
+      meta: { requiresAuth: true }
     },
     {
       path: '/login',
