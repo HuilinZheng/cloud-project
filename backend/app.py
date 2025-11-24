@@ -236,7 +236,7 @@ def get_matches(current_user):
             'match_time': m.match_time.strftime('%Y-%m-%d %H:%M'),
             'opponent': m.opponent,
             'location': m.location,
-            'is_signed_up': !!signup,
+            'is_signed_up': signup,
             'participants': signup_names
         })
     return jsonify(results)
