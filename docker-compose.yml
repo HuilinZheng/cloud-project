@@ -1,25 +1,25 @@
 services:
-  # 1. PostgreSQL 数据库服务
-  db:
-    image: postgres:14
-    container_name: drone_db_container
-    environment:
-      POSTGRES_USER: drone_user
-      POSTGRES_PASSWORD: drone_password
-      POSTGRES_DB: drone_db
-    ports:
-      - "5433:5432"
-    volumes:
-      - db_data:/var/lib/postgresql/data # 已修复：删除了末尾的 \
-      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
-    healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB" ]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
-    env_file:
-      - .env
+  # 1. PostgreSQL 数据库服务,已更改为云数据库
+  # db:
+  #   image: postgres:14
+  #   container_name: drone_db_container
+  #   environment:
+  #     POSTGRES_USER: drone_user
+  #     POSTGRES_PASSWORD: drone_password
+  #     POSTGRES_DB: drone_db
+  #   ports:
+  #     - "5433:5432"
+  #   volumes:
+  #     - db_data:/var/lib/postgresql/data # 已修复：删除了末尾的 \
+  #     - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+  #   healthcheck:
+  #     test: [ "CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB" ]
+  #     interval: 5s
+  #     timeout: 5s
+  #     retries: 5
+  #     start_period: 10s
+  #   env_file:
+  #     - .env
 
   # 2. Flask Python 后端服务
   backend:
@@ -28,16 +28,13 @@ services:
       dockerfile: Dockerfile
     container_name: drone_backend_container
     environment:
-      DB_HOST: db
-      DB_NAME: drone_db
-      DB_USER: drone_user
-      DB_PASS: drone_password
+      DB_HOST: 192.168.0.68
+      DB_NAME: postgres
+      DB_USER: root
+      DB_PASS: mynode12345!
       FLASK_ENV: production
     ports:
       - "5089:5000"
-    depends_on:
-      db:
-        condition: service_healthy
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:5000/api/ping" ]
       interval: 10s
