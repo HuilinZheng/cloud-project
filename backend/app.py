@@ -44,7 +44,7 @@ class Leave(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'))
     training_id = db.Column(db.Integer, db.ForeignKey('trainings.id'))
-    match_id = db.Column(db.Integer, db.ForeignKey('matches.id')) # 新增
+    match_id = db.Column(db.Integer, db.ForeignKey('matches.id'))
     duration_hours = db.Column(db.Float)
     reason = db.Column(db.Text)
     status = db.Column(db.String(20), default='pending')
@@ -159,7 +159,8 @@ def login():
         }
     })
 
-# 1. 训练 & 请假
+# --- 1. 日常训练模块 ---
+
 @app.route('/api/trainings', methods=['GET'])
 @token_required
 def get_trainings(current_user):
@@ -188,6 +189,20 @@ def create_training(current_user):
     except ValueError:
         return jsonify({'message': 'Invalid date format'}), 400
 
+@app.route('/api/trainings/<int:training_id>', methods=['DELETE'])
+@token_required
+@role_required(['captain'])
+def delete_training(current_user, training_id):
+    t = Training.query.get(training_id)
+    if not t: return jsonify({'message': 'Not found'}), 404
+    
+    # 级联删除：先删除关联的请假条
+    Leave.query.filter_by(training_id=training_id).delete()
+    
+    db.session.delete(t)
+    db.session.commit()
+    return jsonify({'message': 'Deleted successfully'})
+
 @app.route('/api/leaves', methods=['POST'])
 @token_required
 @role_required(['player', 'captain', 'manager'])
@@ -195,8 +210,8 @@ def request_leave(current_user):
     data = request.get_json()
     new_leave = Leave(
         user_id=current_user.id,
-        training_id=data.get('training_id'), # 可能是 None
-        match_id=data.get('match_id'),       # 可能是 None
+        training_id=data.get('training_id'),
+        match_id=data.get('match_id'),
         duration_hours=data['duration_hours'],
         reason=data['reason']
     )
@@ -207,7 +222,6 @@ def request_leave(current_user):
 @app.route('/api/leaves', methods=['GET'])
 @token_required
 def get_leaves(current_user):
-    # 本人、队长、教练能查看
     if current_user.role in ['captain', 'coach']:
         leaves = Leave.query.order_by(Leave.created_at.desc()).all()
     else:
@@ -224,7 +238,8 @@ def get_leaves(current_user):
         'related_info': (l.match.opponent if l.match_id else (l.training.start_time.strftime('%m-%d') if l.training_id else '-'))
     } for l in leaves])
 
-# 2. 比赛
+# --- 2. 比赛事宜模块 ---
+
 @app.route('/api/matches', methods=['GET'])
 @token_required
 def get_matches(current_user):
@@ -262,10 +277,24 @@ def create_match(current_user):
     except ValueError:
         return jsonify({'message': 'Invalid date format'}), 400
 
+@app.route('/api/matches/<int:match_id>', methods=['DELETE'])
+@token_required
+@role_required(['captain'])
+def delete_match(current_user, match_id):
+    m = Match.query.get(match_id)
+    if not m: return jsonify({'message': 'Not found'}), 404
+    
+    # 级联删除：先删除报名记录和请假记录
+    MatchSignup.query.filter_by(match_id=match_id).delete()
+    Leave.query.filter_by(match_id=match_id).delete()
+    
+    db.session.delete(m)
+    db.session.commit()
+    return jsonify({'message': 'Deleted successfully'})
+
 @app.route('/api/matches/<int:match_id>/signup', methods=['POST'])
 @token_required
 def signup_match(current_user, match_id):
-    # 修改：队长也能报名
     if current_user.role not in ['player', 'captain']:
         return jsonify({'message': 'Role not allowed to play'}), 403
 
@@ -286,7 +315,8 @@ def signup_match(current_user, match_id):
     db.session.commit()
     return jsonify({'message': 'Signed up successfully'})
 
-# 3. 场地
+# --- 3. 场地预约模块 ---
+
 @app.route('/api/venues', methods=['GET'])
 @token_required
 def get_venues(current_user):
@@ -316,7 +346,8 @@ def create_venue(current_user):
     except ValueError:
         return jsonify({'message': 'Invalid date format'}), 400
 
-# 4. 风采 & 5. 打卡
+# --- 4. 风采 & 5. 个人打卡 ---
+
 @app.route('/api/photos', methods=['GET'])
 @token_required
 def get_photos(current_user):

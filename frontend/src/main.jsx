@@ -15,7 +15,6 @@ api.interceptors.request.use(config => {
 });
 
 // --- Theme Helper ---
-// 定义两套配色方案的类名生成器
 const useThemeClasses = (isDark) => {
     return {
         bg: isDark ? 'bg-gray-900' : 'bg-slate-50',
@@ -30,7 +29,7 @@ const useThemeClasses = (isDark) => {
             ? 'bg-gray-600 hover:bg-gray-500 text-white'
             : 'bg-slate-200 hover:bg-slate-300 text-slate-800',
         accentText: isDark ? 'text-orange-400' : 'text-blue-600',
-        accentBorder: isDark ? 'border-orange-500' : 'border-yellow-400', // 日间模式用黄色做强调边框
+        accentBorder: isDark ? 'border-orange-500' : 'border-yellow-400',
         sidebar: isDark ? 'bg-gray-800' : 'bg-white border-r border-slate-200',
         sidebarActive: isDark ? 'bg-orange-600 text-white' : 'bg-blue-100 text-blue-700',
         successText: isDark ? 'text-green-400' : 'text-green-600',
@@ -182,6 +181,12 @@ const Dashboard = ({ user, onLogout, isDark, toggleTheme }) => {
     );
 };
 
+// --- Helper: 日期格式化 (截取前16位，去掉秒) ---
+const formatDateInput = (value) => {
+    // value 可能是 2023-10-25T14:30:00，截取为 2023-10-25T14:30，再换空格
+    return value.slice(0, 16).replace('T', ' ');
+};
+
 // --- Module Components ---
 
 const TrainingModule = ({ user, theme }) => {
@@ -195,7 +200,7 @@ const TrainingModule = ({ user, theme }) => {
     const [formData, setFormData] = useState({ start_time: '', end_time: '' });
 
     const [leaveData, setLeaveData] = useState({ training_id: '', duration_hours: '', reason: '' });
-    const [expandedId, setExpandedId] = useState(null); // 控制展开查看详情
+    const [expandedId, setExpandedId] = useState(null);
 
     const canEdit = user.role === 'captain';
     const canLeave = ['player', 'captain', 'manager'].includes(user.role);
@@ -205,12 +210,15 @@ const TrainingModule = ({ user, theme }) => {
     }, []);
 
     const fetchData = async () => {
-        const [tRes, lRes] = await Promise.all([api.get('/trainings'), api.get('/leaves')]);
-        setTrainings(tRes.data);
-        setLeaves(lRes.data);
+        try {
+            const [tRes, lRes] = await Promise.all([api.get('/trainings'), api.get('/leaves')]);
+            setTrainings(tRes.data);
+            setLeaves(lRes.data);
+        } catch (e) {
+            console.error("Fetch error", e);
+        }
     };
 
-    // 处理训练项的添加和输入
     const handleItemChange = (index, value) => {
         const newItems = [...planItems];
         newItems[index] = value;
@@ -224,34 +232,51 @@ const TrainingModule = ({ user, theme }) => {
 
     const handleCreate = async (e) => {
         e.preventDefault();
-        // 将数组过滤空值后，转换为 JSON 字符串发送给后端
         const validItems = planItems.filter(item => item.trim() !== '');
         if (validItems.length === 0) return alert('请至少填写一项训练内容');
+        if (!formData.start_time || !formData.end_time) return alert('请选择开始和结束时间');
 
-        await api.post('/trainings', {
-            ...formData,
-            plan_content: JSON.stringify(validItems) // 序列化
-        });
-        setShowForm(false);
-        setPlanItems(['']);
-        setFormData({ start_time: '', end_time: '' });
-        fetchData();
+        try {
+            await api.post('/trainings', {
+                ...formData,
+                plan_content: JSON.stringify(validItems)
+            });
+            setShowForm(false);
+            setPlanItems(['']);
+            setFormData({ start_time: '', end_time: '' });
+            fetchData();
+        } catch (err) {
+            alert('发布失败: ' + (err.response?.data?.message || err.message));
+        }
+    };
+
+    const handleDelete = async (id) => {
+        if (!confirm('确定要删除这条训练计划吗？相关的请假记录也会被删除。')) return;
+        try {
+            await api.delete(`/trainings/${id}`);
+            fetchData();
+        } catch (err) {
+            alert('删除失败: ' + (err.response?.data?.message || err.message));
+        }
     };
 
     const handleLeave = async (e) => {
         e.preventDefault();
-        await api.post('/leaves', leaveData);
-        setShowLeaveForm(false);
-        fetchData();
+        try {
+            await api.post('/leaves', leaveData);
+            setShowLeaveForm(false);
+            fetchData();
+        } catch (err) {
+            alert('请假提交失败: ' + (err.response?.data?.message || err.message));
+        }
     };
 
-    // 解析后端传来的内容（兼容旧的纯文本格式）
     const parseContent = (content) => {
         try {
             const parsed = JSON.parse(content);
             return Array.isArray(parsed) ? parsed : [content];
         } catch (e) {
-            return [content]; // 如果不是 JSON，就作为单条文本处理
+            return [content];
         }
     };
 
@@ -265,18 +290,17 @@ const TrainingModule = ({ user, theme }) => {
                 </div>
             </div>
 
-            {/* 发布训练表单 */}
             {showForm && (
                 <form onSubmit={handleCreate} className={`${theme.card} p-6 rounded mb-6 border-l-4 ${theme.accentBorder}`}>
                     <h3 className="font-bold mb-4 text-lg">新建训练计划</h3>
                     <div className="grid grid-cols-2 gap-4 mb-4">
                         <div>
                             <label className={`block text-sm mb-1 ${theme.textMuted}`}>开始时间</label>
-                            <input type="datetime-local" className={`w-full p-2 rounded ${theme.input}`} required onChange={e => setFormData({ ...formData, start_time: e.target.value.replace('T', ' ') })} />
+                            <input type="datetime-local" className={`w-full p-2 rounded ${theme.input}`} required onChange={e => setFormData({ ...formData, start_time: formatDateInput(e.target.value) })} />
                         </div>
                         <div>
                             <label className={`block text-sm mb-1 ${theme.textMuted}`}>结束时间</label>
-                            <input type="datetime-local" className={`w-full p-2 rounded ${theme.input}`} required onChange={e => setFormData({ ...formData, end_time: e.target.value.replace('T', ' ') })} />
+                            <input type="datetime-local" className={`w-full p-2 rounded ${theme.input}`} required onChange={e => setFormData({ ...formData, end_time: formatDateInput(e.target.value) })} />
                         </div>
                     </div>
 
@@ -313,7 +337,6 @@ const TrainingModule = ({ user, theme }) => {
                 </form>
             )}
 
-            {/* 请假表单 */}
             {showLeaveForm && (
                 <form onSubmit={handleLeave} className={`${theme.card} p-6 rounded mb-6 border border-gray-300`}>
                     <h3 className="font-bold mb-4">提交请假申请</h3>
@@ -329,7 +352,6 @@ const TrainingModule = ({ user, theme }) => {
                 </form>
             )}
 
-            {/* 训练列表展示 */}
             <div className="grid gap-4">
                 {trainings.map(t => {
                     const items = parseContent(t.plan_content);
@@ -340,10 +362,10 @@ const TrainingModule = ({ user, theme }) => {
                     return (
                         <div
                             key={t.id}
-                            className={`${theme.card} p-5 rounded shadow-sm border-l-4 ${theme.accentBorder} cursor-pointer transition-all hover:shadow-md`}
+                            className={`${theme.card} p-5 rounded shadow-sm border-l-4 ${theme.accentBorder} cursor-pointer transition-all hover:shadow-md relative`}
                             onClick={() => setExpandedId(isExpanded ? null : t.id)}
                         >
-                            <div className="flex justify-between items-start mb-2">
+                            <div className="flex justify-between items-start mb-2 pr-8">
                                 <h3 className={`font-bold text-xl ${theme.accentText}`}>
                                     {t.start_time} <span className="text-sm text-gray-400 mx-2">至</span> {t.end_time.split(' ')[1]}
                                 </h3>
@@ -351,6 +373,17 @@ const TrainingModule = ({ user, theme }) => {
                                     {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
                                 </span>
                             </div>
+
+                            {/* Delete Button for Captain */}
+                            {canEdit && (
+                                <button
+                                    onClick={(e) => { e.stopPropagation(); handleDelete(t.id); }}
+                                    className="absolute top-4 right-4 text-red-400 hover:text-red-600 p-1 rounded hover:bg-gray-200 dark:hover:bg-gray-700"
+                                    title="删除"
+                                >
+                                    <Trash2 size={18} />
+                                </button>
+                            )}
 
                             <div className={`pl-4 border-l-2 ${theme.divider} space-y-1`}>
                                 {displayItems.map((item, idx) => (
@@ -392,9 +425,22 @@ const MatchModule = ({ user, theme }) => {
     };
     const handleCreate = async (e) => {
         e.preventDefault();
-        await api.post('/matches', formData);
-        setShowForm(false);
-        fetchMatches();
+        try {
+            await api.post('/matches', formData);
+            setShowForm(false);
+            fetchMatches();
+        } catch (err) {
+            alert('发布失败: ' + (err.response?.data?.message || err.message));
+        }
+    };
+    const handleDelete = async (id) => {
+        if (!confirm('确定要删除这场比赛吗？相关的报名和请假记录也会被删除。')) return;
+        try {
+            await api.delete(`/matches/${id}`);
+            fetchMatches();
+        } catch (err) {
+            alert('删除失败: ' + (err.response?.data?.message || err.message));
+        }
     };
     const handleSignup = async (id) => {
         try {
@@ -415,7 +461,7 @@ const MatchModule = ({ user, theme }) => {
                 <form onSubmit={handleCreate} className={`${theme.card} p-6 rounded mb-6 border-l-4 ${theme.accentBorder}`}>
                     <h3 className="font-bold mb-4">发布新比赛</h3>
                     <div className="grid grid-cols-3 gap-4 mb-4">
-                        <input type="datetime-local" className={`p-2 rounded ${theme.input}`} required onChange={e => setFormData({ ...formData, match_time: e.target.value.replace('T', ' ') })} />
+                        <input type="datetime-local" className={`p-2 rounded ${theme.input}`} required onChange={e => setFormData({ ...formData, match_time: formatDateInput(e.target.value) })} />
                         <input type="text" placeholder="对手名称" className={`p-2 rounded ${theme.input}`} required onChange={e => setFormData({ ...formData, opponent: e.target.value })} />
                         <input type="text" placeholder="比赛地点" className={`p-2 rounded ${theme.input}`} required onChange={e => setFormData({ ...formData, location: e.target.value })} />
                     </div>
@@ -429,6 +475,18 @@ const MatchModule = ({ user, theme }) => {
                         <div className={`absolute top-0 right-0 p-2 px-4 rounded-bl-lg text-sm font-bold ${theme.bg} ${theme.textMuted}`}>
                             {m.location}
                         </div>
+
+                        {/* Delete Button for Captain */}
+                        {canEdit && (
+                            <button
+                                onClick={() => handleDelete(m.id)}
+                                className="absolute bottom-4 right-4 z-10 text-red-400 hover:text-red-600 p-2 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
+                                title="删除比赛"
+                            >
+                                <Trash2 size={20} />
+                            </button>
+                        )}
+
                         <h3 className="text-2xl font-bold mb-2 flex items-center gap-2">
                             <Clock size={20} className={theme.accentText} /> {m.match_time} <span className="text-gray-400">vs</span> {m.opponent}
                         </h3>
@@ -441,7 +499,6 @@ const MatchModule = ({ user, theme }) => {
                                 ))}
                             </div>
 
-                            {/* 修改：队长和队员都可以报名 */}
                             {!m.is_signed_up && (user.role === 'player' || user.role === 'captain') && (
                                 <button onClick={() => handleSignup(m.id)} className="bg-green-600 hover:bg-green-700 text-white px-6 py-2 rounded font-bold shadow-md">
                                     立即报名
@@ -485,8 +542,8 @@ const VenueModule = ({ user, theme }) => {
                 <form onSubmit={handleCreate} className={`${theme.card} p-4 rounded mb-6 border-l-4 ${theme.accentBorder}`}>
                     <h3 className="font-bold mb-4">录入场地预约</h3>
                     <div className="grid grid-cols-2 gap-4 mb-4">
-                        <input type="datetime-local" className={`p-2 rounded ${theme.input}`} required onChange={e => setFormData({ ...formData, start_time: e.target.value.replace('T', ' ') })} />
-                        <input type="datetime-local" className={`p-2 rounded ${theme.input}`} required onChange={e => setFormData({ ...formData, end_time: e.target.value.replace('T', ' ') })} />
+                        <input type="datetime-local" className={`p-2 rounded ${theme.input}`} required onChange={e => setFormData({ ...formData, start_time: formatDateInput(e.target.value) })} />
+                        <input type="datetime-local" className={`p-2 rounded ${theme.input}`} required onChange={e => setFormData({ ...formData, end_time: formatDateInput(e.target.value) })} />
                     </div>
                     <input type="text" placeholder="预约凭证图片链接 (URL)" className={`w-full p-2 rounded mb-4 ${theme.input}`} onChange={e => setFormData({ ...formData, proof_photo_url: e.target.value })} />
                     <button type="submit" className={`${theme.primaryBtn} px-6 py-2 rounded`}>提交</button>
