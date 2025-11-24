@@ -11,17 +11,17 @@ from config import Config
 
 app = Flask(__name__)
 app.config.from_object(Config)
-CORS(app) # 允许跨域
+CORS(app)
 db = SQLAlchemy(app)
 
-# --- Models (与 init.sql 对应) ---
+# --- Models ---
 
 class User(db.Model):
     __tablename__ = 'users'
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(50), unique=True, nullable=False)
     password_hash = db.Column(db.String(255), nullable=False)
-    role = db.Column(db.String(20), nullable=False) # captain, coach, player, manager
+    role = db.Column(db.String(20), nullable=False)
     real_name = db.Column(db.String(50))
     student_id = db.Column(db.String(20))
 
@@ -32,22 +32,26 @@ class Training(db.Model):
     end_time = db.Column(db.DateTime, nullable=False)
     plan_content = db.Column(db.Text)
 
-class Leave(db.Model):
-    __tablename__ = 'leaves'
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('users.id'))
-    training_id = db.Column(db.Integer, db.ForeignKey('trainings.id'))
-    duration_hours = db.Column(db.Float)
-    reason = db.Column(db.Text)
-    status = db.Column(db.String(20), default='pending')
-    user = db.relationship('User', backref='leaves')
-
 class Match(db.Model):
     __tablename__ = 'matches'
     id = db.Column(db.Integer, primary_key=True)
     match_time = db.Column(db.DateTime, nullable=False)
     opponent = db.Column(db.String(100))
     location = db.Column(db.String(100))
+
+class Leave(db.Model):
+    __tablename__ = 'leaves'
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'))
+    training_id = db.Column(db.Integer, db.ForeignKey('trainings.id'))
+    match_id = db.Column(db.Integer, db.ForeignKey('matches.id')) # 新增
+    duration_hours = db.Column(db.Float)
+    reason = db.Column(db.Text)
+    status = db.Column(db.String(20), default='pending')
+    
+    user = db.relationship('User', backref='leaves')
+    training = db.relationship('Training')
+    match = db.relationship('Match')
 
 class MatchSignup(db.Model):
     __tablename__ = 'match_signups'
@@ -98,7 +102,6 @@ def token_required(f):
         return f(current_user, *args, **kwargs)
     return decorated
 
-# 权限检查装饰器
 def role_required(roles):
     def decorator(f):
         @wraps(f)
@@ -118,7 +121,6 @@ def ping():
 @app.route('/api/register', methods=['POST'])
 def register():
     data = request.get_json()
-    # 简单起见，注册时允许选择角色，实际生产环境应由管理员分配
     hashed = generate_password_hash(data['password'], method='scrypt')
     new_user = User(
         username=data['username'], 
@@ -157,8 +159,7 @@ def login():
         }
     })
 
-# --- 1. 日常训练模块 ---
-
+# 1. 训练 & 请假
 @app.route('/api/trainings', methods=['GET'])
 @token_required
 def get_trainings(current_user):
@@ -172,26 +173,30 @@ def get_trainings(current_user):
 
 @app.route('/api/trainings', methods=['POST'])
 @token_required
-@role_required(['captain']) # 只有队长能修改
+@role_required(['captain'])
 def create_training(current_user):
     data = request.get_json()
-    new_t = Training(
-        start_time=datetime.datetime.strptime(data['start_time'], '%Y-%m-%d %H:%M'),
-        end_time=datetime.datetime.strptime(data['end_time'], '%Y-%m-%d %H:%M'),
-        plan_content=data['plan_content']
-    )
-    db.session.add(new_t)
-    db.session.commit()
-    return jsonify({'message': 'Training created'})
+    try:
+        new_t = Training(
+            start_time=datetime.datetime.strptime(data['start_time'], '%Y-%m-%d %H:%M'),
+            end_time=datetime.datetime.strptime(data['end_time'], '%Y-%m-%d %H:%M'),
+            plan_content=data['plan_content']
+        )
+        db.session.add(new_t)
+        db.session.commit()
+        return jsonify({'message': 'Training created'})
+    except ValueError:
+        return jsonify({'message': 'Invalid date format'}), 400
 
 @app.route('/api/leaves', methods=['POST'])
 @token_required
-@role_required(['player', 'captain', 'manager']) # 队员、队长、经理都可以请假
+@role_required(['player', 'captain', 'manager'])
 def request_leave(current_user):
     data = request.get_json()
     new_leave = Leave(
         user_id=current_user.id,
-        training_id=data.get('training_id'),
+        training_id=data.get('training_id'), # 可能是 None
+        match_id=data.get('match_id'),       # 可能是 None
         duration_hours=data['duration_hours'],
         reason=data['reason']
     )
@@ -204,9 +209,9 @@ def request_leave(current_user):
 def get_leaves(current_user):
     # 本人、队长、教练能查看
     if current_user.role in ['captain', 'coach']:
-        leaves = Leave.query.all()
+        leaves = Leave.query.order_by(Leave.created_at.desc()).all()
     else:
-        leaves = Leave.query.filter_by(user_id=current_user.id).all()
+        leaves = Leave.query.filter_by(user_id=current_user.id).order_by(Leave.created_at.desc()).all()
         
     return jsonify([{
         'id': l.id,
@@ -214,20 +219,19 @@ def get_leaves(current_user):
         'real_name': l.user.real_name,
         'duration_hours': float(l.duration_hours),
         'reason': l.reason,
-        'status': l.status
+        'status': l.status,
+        'type': '比赛' if l.match_id else ('训练' if l.training_id else '通用'),
+        'related_info': (l.match.opponent if l.match_id else (l.training.start_time.strftime('%m-%d') if l.training_id else '-'))
     } for l in leaves])
 
-# --- 2. 比赛事宜模块 ---
-
+# 2. 比赛
 @app.route('/api/matches', methods=['GET'])
 @token_required
 def get_matches(current_user):
     matches = Match.query.order_by(Match.match_time).all()
     results = []
     for m in matches:
-        # 检查当前用户是否已报名
         signup = MatchSignup.query.filter_by(match_id=m.id, user_id=current_user.id).first()
-        # 获取所有报名人员 (仅队长/教练/经理可见详情，或简化处理全员可见名字)
         signups = MatchSignup.query.filter_by(match_id=m.id).all()
         signup_names = [s.real_name for s in signups]
         
@@ -236,7 +240,7 @@ def get_matches(current_user):
             'match_time': m.match_time.strftime('%Y-%m-%d %H:%M'),
             'opponent': m.opponent,
             'location': m.location,
-            'is_signed_up': signup,
+            'is_signed_up': bool(signup),
             'participants': signup_names
         })
     return jsonify(results)
@@ -246,21 +250,27 @@ def get_matches(current_user):
 @role_required(['captain'])
 def create_match(current_user):
     data = request.get_json()
-    new_m = Match(
-        match_time=datetime.datetime.strptime(data['match_time'], '%Y-%m-%d %H:%M'),
-        opponent=data['opponent'],
-        location=data['location']
-    )
-    db.session.add(new_m)
-    db.session.commit()
-    return jsonify({'message': 'Match created'})
+    try:
+        new_m = Match(
+            match_time=datetime.datetime.strptime(data['match_time'], '%Y-%m-%d %H:%M'),
+            opponent=data['opponent'],
+            location=data['location']
+        )
+        db.session.add(new_m)
+        db.session.commit()
+        return jsonify({'message': 'Match created'})
+    except ValueError:
+        return jsonify({'message': 'Invalid date format'}), 400
 
 @app.route('/api/matches/<int:match_id>/signup', methods=['POST'])
 @token_required
 def signup_match(current_user, match_id):
-    # 自动使用用户的实名和学号
+    # 修改：队长也能报名
+    if current_user.role not in ['player', 'captain']:
+        return jsonify({'message': 'Role not allowed to play'}), 403
+
     if not current_user.real_name or not current_user.student_id:
-        return jsonify({'message': 'Please complete your profile (Real Name & Student ID) first'}), 400
+        return jsonify({'message': 'Please complete profile first'}), 400
         
     existing = MatchSignup.query.filter_by(match_id=match_id, user_id=current_user.id).first()
     if existing:
@@ -276,8 +286,7 @@ def signup_match(current_user, match_id):
     db.session.commit()
     return jsonify({'message': 'Signed up successfully'})
 
-# --- 3. 场地预约模块 ---
-
+# 3. 场地
 @app.route('/api/venues', methods=['GET'])
 @token_required
 def get_venues(current_user):
@@ -291,21 +300,23 @@ def get_venues(current_user):
 
 @app.route('/api/venues', methods=['POST'])
 @token_required
-@role_required(['captain', 'manager']) # 队长和经理修改
+@role_required(['captain', 'manager'])
 def create_venue(current_user):
     data = request.get_json()
-    new_v = Venue(
-        start_time=datetime.datetime.strptime(data['start_time'], '%Y-%m-%d %H:%M'),
-        end_time=datetime.datetime.strptime(data['end_time'], '%Y-%m-%d %H:%M'),
-        proof_photo_url=data.get('proof_photo_url'),
-        updated_by=current_user.id
-    )
-    db.session.add(new_v)
-    db.session.commit()
-    return jsonify({'message': 'Venue reservation updated'})
+    try:
+        new_v = Venue(
+            start_time=datetime.datetime.strptime(data['start_time'], '%Y-%m-%d %H:%M'),
+            end_time=datetime.datetime.strptime(data['end_time'], '%Y-%m-%d %H:%M'),
+            proof_photo_url=data.get('proof_photo_url'),
+            updated_by=current_user.id
+        )
+        db.session.add(new_v)
+        db.session.commit()
+        return jsonify({'message': 'Venue reservation updated'})
+    except ValueError:
+        return jsonify({'message': 'Invalid date format'}), 400
 
-# --- 4. 风采展示 & 5. 个人训练 (简化：共用图片逻辑) ---
-
+# 4. 风采 & 5. 打卡
 @app.route('/api/photos', methods=['GET'])
 @token_required
 def get_photos(current_user):
@@ -338,7 +349,6 @@ def log_personal_training(current_user):
 @app.route('/api/personal_trainings', methods=['GET'])
 @token_required
 def get_personal_trainings(current_user):
-    # 队长和教练看所有，队员看自己
     if current_user.role in ['captain', 'coach']:
         logs = PersonalTraining.query.order_by(PersonalTraining.created_at.desc()).all()
     else:
