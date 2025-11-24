@@ -48,7 +48,7 @@ class Leave(db.Model):
     duration_hours = db.Column(db.Float)
     reason = db.Column(db.Text)
     status = db.Column(db.String(20), default='pending')
-    
+    created_at = db.Column(db.DateTime, default=datetime.datetime.utcnow)
     user = db.relationship('User', backref='leaves')
     training = db.relationship('Training')
     match = db.relationship('Match')
