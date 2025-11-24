@@ -1,76 +1,24 @@
-services:
-  # 1. PostgreSQL 数据库服务,已更改为云数据库
-  # db:
-  #   image: postgres:14
-  #   container_name: drone_db_container
-  #   environment:
-  #     POSTGRES_USER: drone_user
-  #     POSTGRES_PASSWORD: drone_password
-  #     POSTGRES_DB: drone_db
-  #   ports:
-  #     - "5433:5432"
-  #   volumes:
-  #     - db_data:/var/lib/postgresql/data # 已修复：删除了末尾的 \
-  #     - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
-  #   healthcheck:
-  #     test: [ "CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB" ]
-  #     interval: 5s
-  #     timeout: 5s
-  #     retries: 5
-  #     start_period: 10s
-  #   env_file:
-  #     - .env
-
-  # 2. Flask Python 后端服务
-  backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    container_name: drone_backend_container
-    environment:
-      DB_HOST: 192.168.0.68
-      DB_NAME: postgres
-      DB_USER: root
-      DB_PASS: mynode12345!
-      FLASK_ENV: production
-    ports:
-      - "5089:5000"
-    healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:5000/api/ping" ]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 20s
-    env_file:
-      - .env
-
-  # 3. Vue.js 前端应用 (构建阶段)
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    image: drone_frontend_app:latest
-    container_name: drone_frontend_builder
-    volumes:
-      - frontend_dist_data:/app/dist
-
-  # 4. Nginx 反向代理服务
-  nginx:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile.nginx
-    container_name: drone_nginx_server
-    # 已修复：删除了空的 environment 键
-    ports:
-      - "80:80"
-    volumes:
-      - frontend_dist_data:/usr/share/nginx/html:ro
-    depends_on:
-      backend:
-        condition: service_healthy
-      frontend:
-        condition: service_completed_successfully # 建议修改：等待前端构建完成再启动 Nginx
-
-volumes:
-  db_data:
-  frontend_dist_data:
+{
+  "name": "basketball-team-manager",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "axios": "^1.6.8",
+    "lucide-react": "^0.363.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.2.1",
+    "vite": "^5.2.0",
+    "autoprefixer": "^10.4.19",
+    "postcss": "^8.4.38",
+    "tailwindcss": "^3.4.3"
+  }
+}

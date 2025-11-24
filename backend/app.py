@@ -1,4 +1,3 @@
-# backend/app.py
 import os
 import datetime
 import json
@@ -7,66 +6,82 @@ from functools import wraps
 from flask import Flask, jsonify, request
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
+from flask_cors import CORS
 from config import Config
 
 app = Flask(__name__)
 app.config.from_object(Config)
+CORS(app) # 允许跨域
 db = SQLAlchemy(app)
 
-# --- 游戏数值配置 (The Spreadsheet Config) ---
-GAME_CONFIG = {
-    # 建筑配置
-    "buildings": {
-        "lumberjack": {"cost": 100, "maintenance": 10, "output": {"wood": 4}, "input": {}},
-        "fishery":    {"cost": 200, "maintenance": 15, "output": {"fish": 5}, "input": {}},
-        "sheep_farm": {"cost": 300, "maintenance": 10, "output": {"wool": 4}, "input": {}},
-        "weaver":     {"cost": 400, "maintenance": 20, "output": {"work_clothes": 2}, "input": {"wool": 2}},
-        "house_t1":   {"cost": 0,   "maintenance": 0,  "tax_per_head": 1, "capacity": 10}, 
-    },
-    # 人口需求
-    "needs": {
-        "pioneers": {"fish": 1.0, "work_clothes": 0.5},
-    }
-}
+# --- Models (与 init.sql 对应) ---
 
-# --- 数据库模型 ---
 class User(db.Model):
     __tablename__ = 'users'
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(50), unique=True, nullable=False)
     password_hash = db.Column(db.String(255), nullable=False)
-    silver_coins = db.Column(db.Integer, default=5000)
+    role = db.Column(db.String(20), nullable=False) # captain, coach, player, manager
+    real_name = db.Column(db.String(50))
+    student_id = db.Column(db.String(20))
 
-class Island(db.Model):
-    __tablename__ = 'islands'
+class Training(db.Model):
+    __tablename__ = 'trainings'
+    id = db.Column(db.Integer, primary_key=True)
+    start_time = db.Column(db.DateTime, nullable=False)
+    end_time = db.Column(db.DateTime, nullable=False)
+    plan_content = db.Column(db.Text)
+
+class Leave(db.Model):
+    __tablename__ = 'leaves'
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'))
-    map_data = db.Column(db.JSON) 
-    status = db.relationship('IslandStatus', uselist=False, backref='island')
-    buildings = db.relationship('Building', backref='island')
+    training_id = db.Column(db.Integer, db.ForeignKey('trainings.id'))
+    duration_hours = db.Column(db.Float)
+    reason = db.Column(db.Text)
+    status = db.Column(db.String(20), default='pending')
+    user = db.relationship('User', backref='leaves')
 
-class IslandStatus(db.Model):
-    __tablename__ = 'island_status'
+class Match(db.Model):
+    __tablename__ = 'matches'
     id = db.Column(db.Integer, primary_key=True)
-    island_id = db.Column(db.Integer, db.ForeignKey('islands.id'))
-    wood = db.Column(db.Integer, default=50)
-    fish = db.Column(db.Integer, default=0)
-    wool = db.Column(db.Integer, default=0)
-    work_clothes = db.Column(db.Integer, default=0)
-    pop_pioneers = db.Column(db.Integer, default=0)
+    match_time = db.Column(db.DateTime, nullable=False)
+    opponent = db.Column(db.String(100))
+    location = db.Column(db.String(100))
 
-    def to_dict(self):
-        return {c.name: getattr(self, c.name) for c in self.__table__.columns}
-
-class Building(db.Model):
-    __tablename__ = 'buildings'
+class MatchSignup(db.Model):
+    __tablename__ = 'match_signups'
     id = db.Column(db.Integer, primary_key=True)
-    island_id = db.Column(db.Integer, db.ForeignKey('islands.id'))
-    type = db.Column(db.String(50))
-    grid_x = db.Column(db.Integer)
-    grid_y = db.Column(db.Integer)
+    match_id = db.Column(db.Integer, db.ForeignKey('matches.id'))
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'))
+    real_name = db.Column(db.String(50))
+    student_id = db.Column(db.String(20))
 
-# --- 辅助函数 ---
+class Venue(db.Model):
+    __tablename__ = 'venues'
+    id = db.Column(db.Integer, primary_key=True)
+    start_time = db.Column(db.DateTime, nullable=False)
+    end_time = db.Column(db.DateTime, nullable=False)
+    proof_photo_url = db.Column(db.Text)
+    updated_by = db.Column(db.Integer, db.ForeignKey('users.id'))
+
+class TeamPhoto(db.Model):
+    __tablename__ = 'team_photos'
+    id = db.Column(db.Integer, primary_key=True)
+    photo_url = db.Column(db.Text, nullable=False)
+    description = db.Column(db.Text)
+
+class PersonalTraining(db.Model):
+    __tablename__ = 'personal_trainings'
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'))
+    item_name = db.Column(db.String(100), nullable=False)
+    photo_url = db.Column(db.Text)
+    created_at = db.Column(db.DateTime, default=datetime.datetime.utcnow)
+    user = db.relationship('User')
+
+# --- Helper Functions ---
+
 def token_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
@@ -83,47 +98,43 @@ def token_required(f):
         return f(current_user, *args, **kwargs)
     return decorated
 
-def init_island_for_user(user):
-    default_map = [['grass' for _ in range(20)] for _ in range(20)]
-    new_island = Island(user_id=user.id, map_data=default_map)
-    db.session.add(new_island)
-    db.session.flush() 
-    new_status = IslandStatus(island_id=new_island.id)
-    db.session.add(new_status)
-    db.session.commit()
-    return new_island
+# 权限检查装饰器
+def role_required(roles):
+    def decorator(f):
+        @wraps(f)
+        def wrapped(current_user, *args, **kwargs):
+            if current_user.role not in roles:
+                return jsonify({'message': 'Permission denied'}), 403
+            return f(current_user, *args, **kwargs)
+        return wrapped
+    return decorator
 
-# --- API 路由 ---
+# --- Routes ---
 
-# 1. Ping 路由 (这就是刚才缺失导致报错的部分)
 @app.route('/api/ping', methods=['GET'])
 def ping():
-    return jsonify({'status': 'ok', 'message': 'pong'})
+    return jsonify({'status': 'ok', 'message': 'Basketball System Online'})
 
-# 2. 根路由
-@app.route('/')
-def hello():
-    return jsonify({"message": "Welcome to Anno 1800 Clone API"})
-
-# 3. 注册
 @app.route('/api/register', methods=['POST'])
 def register():
     data = request.get_json()
-    if not data or not data.get('username') or not data.get('password'):
-        return jsonify({'message': 'Missing data'}), 400
-        
+    # 简单起见，注册时允许选择角色，实际生产环境应由管理员分配
     hashed = generate_password_hash(data['password'], method='scrypt')
-    new_user = User(username=data['username'], password_hash=hashed)
+    new_user = User(
+        username=data['username'], 
+        password_hash=hashed,
+        role=data.get('role', 'player'),
+        real_name=data.get('real_name', ''),
+        student_id=data.get('student_id', '')
+    )
     db.session.add(new_user)
     try:
         db.session.commit()
-        init_island_for_user(new_user)
         return jsonify({'message': 'Registered successfully'}), 201
     except Exception as e:
         db.session.rollback()
-        return jsonify({'message': 'Error registering', 'details': str(e)}), 500
+        return jsonify({'message': str(e)}), 500
 
-# 4. 登录
 @app.route('/api/login', methods=['POST'])
 def login():
     data = request.get_json()
@@ -138,117 +149,209 @@ def login():
     
     return jsonify({
         'token': token, 
-        'user': {'username': user.username, 'coins': user.silver_coins}
+        'user': {
+            'username': user.username, 
+            'role': user.role,
+            'real_name': user.real_name,
+            'student_id': user.student_id
+        }
     })
 
-# 5. 获取游戏状态
-@app.route('/api/game/state', methods=['GET'])
-@token_required
-def get_game_state(current_user):
-    island = Island.query.filter_by(user_id=current_user.id).first()
-    if not island:
-        island = init_island_for_user(current_user)
-    
-    buildings = Building.query.filter_by(island_id=island.id).all()
-    b_list = [{'type': b.type, 'x': b.grid_x, 'y': b.grid_y} for b in buildings]
-    
-    return jsonify({
-        'map': island.map_data,
-        'status': island.status.to_dict(),
-        'buildings': b_list,
-        'coins': current_user.silver_coins
-    })
+# --- 1. 日常训练模块 ---
 
-# 6. 建造建筑
-@app.route('/api/game/build', methods=['POST'])
+@app.route('/api/trainings', methods=['GET'])
 @token_required
-def build_structure(current_user):
+def get_trainings(current_user):
+    trainings = Training.query.order_by(Training.start_time.desc()).all()
+    return jsonify([{
+        'id': t.id,
+        'start_time': t.start_time.strftime('%Y-%m-%d %H:%M'),
+        'end_time': t.end_time.strftime('%Y-%m-%d %H:%M'),
+        'plan_content': t.plan_content
+    } for t in trainings])
+
+@app.route('/api/trainings', methods=['POST'])
+@token_required
+@role_required(['captain']) # 只有队长能修改
+def create_training(current_user):
     data = request.get_json()
-    b_type = data.get('type')
-    x, y = data.get('x'), data.get('y')
-    
-    island = Island.query.filter_by(user_id=current_user.id).first()
-    cfg = GAME_CONFIG['buildings'].get(b_type)
-    
-    if not cfg: return jsonify({'message': 'Invalid building type'}), 400
-    if current_user.silver_coins < cfg['cost']:
-        return jsonify({'message': 'Not enough silver'}), 400
-    
-    if Building.query.filter_by(island_id=island.id, grid_x=x, grid_y=y).first():
-        return jsonify({'message': 'Space already occupied'}), 400
-
-    current_user.silver_coins -= cfg['cost']
-    new_b = Building(island_id=island.id, type=b_type, grid_x=x, grid_y=y)
-    
-    if b_type == 'house_t1':
-        island.status.pop_pioneers += cfg['capacity']
-        
-    db.session.add(new_b)
+    new_t = Training(
+        start_time=datetime.datetime.strptime(data['start_time'], '%Y-%m-%d %H:%M'),
+        end_time=datetime.datetime.strptime(data['end_time'], '%Y-%m-%d %H:%M'),
+        plan_content=data['plan_content']
+    )
+    db.session.add(new_t)
     db.session.commit()
-    
-    return jsonify({'message': 'Built successfully', 'coins': current_user.silver_coins})
+    return jsonify({'message': 'Training created'})
 
-# 7. 游戏时间流逝 (Tick)
-@app.route('/api/game/tick', methods=['POST'])
+@app.route('/api/leaves', methods=['POST'])
 @token_required
-def process_tick(current_user):
-    island = Island.query.filter_by(user_id=current_user.id).first()
-    status = island.status
-    buildings = Building.query.filter_by(island_id=island.id).all()
-    
-    total_maintenance = 0
-    total_tax = 0
-    
-    # 计算产出和维护费
-    for b in buildings:
-        cfg = GAME_CONFIG['buildings'].get(b.type)
-        if not cfg: continue
-        
-        total_maintenance += cfg['maintenance']
-        
-        # 消耗原料
-        for res, amt in cfg.get('input', {}).items():
-            curr_val = getattr(status, res, 0)
-            setattr(status, res, max(0, curr_val - amt))
-            
-        # 增加产出
-        for res, amt in cfg.get('output', {}).items():
-            curr_val = getattr(status, res, 0)
-            setattr(status, res, curr_val + amt)
-            
-    # 计算人口消耗与税收
-    num_pioneer_houses = len([b for b in buildings if b.type == 'house_t1'])
-    if num_pioneer_houses > 0:
-        needs = GAME_CONFIG['needs']['pioneers']
-        # 简单逻辑：只要有一种需求不满足，税收就减半 (这里仅做演示，可复杂化)
-        fully_satisfied = True
-        
-        for res, amount_per_house in needs.items():
-            total_needed = num_pioneer_houses * amount_per_house
-            curr_res = getattr(status, res, 0)
-            
-            if curr_res >= total_needed:
-                setattr(status, res, curr_res - total_needed)
-            else:
-                setattr(status, res, 0)
-                fully_satisfied = False
-
-        tax_per_house = GAME_CONFIG['buildings']['house_t1']['tax_per_head'] * 10 # 假设满员10人
-        if not fully_satisfied:
-            tax_per_house = tax_per_house // 2
-            
-        total_tax += num_pioneer_houses * tax_per_house
-
-    net_income = total_tax - total_maintenance
-    current_user.silver_coins += net_income
-    
+@role_required(['player', 'captain', 'manager']) # 队员、队长、经理都可以请假
+def request_leave(current_user):
+    data = request.get_json()
+    new_leave = Leave(
+        user_id=current_user.id,
+        training_id=data.get('training_id'),
+        duration_hours=data['duration_hours'],
+        reason=data['reason']
+    )
+    db.session.add(new_leave)
     db.session.commit()
-    
-    return jsonify({
-        'status': status.to_dict(), 
-        'coins': current_user.silver_coins,
-        'log': f"Tax: {total_tax}, Maint: {total_maintenance}, Net: {net_income}"
-    })
+    return jsonify({'message': 'Leave requested'})
+
+@app.route('/api/leaves', methods=['GET'])
+@token_required
+def get_leaves(current_user):
+    # 本人、队长、教练能查看
+    if current_user.role in ['captain', 'coach']:
+        leaves = Leave.query.all()
+    else:
+        leaves = Leave.query.filter_by(user_id=current_user.id).all()
+        
+    return jsonify([{
+        'id': l.id,
+        'username': l.user.username,
+        'real_name': l.user.real_name,
+        'duration_hours': float(l.duration_hours),
+        'reason': l.reason,
+        'status': l.status
+    } for l in leaves])
+
+# --- 2. 比赛事宜模块 ---
+
+@app.route('/api/matches', methods=['GET'])
+@token_required
+def get_matches(current_user):
+    matches = Match.query.order_by(Match.match_time).all()
+    results = []
+    for m in matches:
+        # 检查当前用户是否已报名
+        signup = MatchSignup.query.filter_by(match_id=m.id, user_id=current_user.id).first()
+        # 获取所有报名人员 (仅队长/教练/经理可见详情，或简化处理全员可见名字)
+        signups = MatchSignup.query.filter_by(match_id=m.id).all()
+        signup_names = [s.real_name for s in signups]
+        
+        results.append({
+            'id': m.id,
+            'match_time': m.match_time.strftime('%Y-%m-%d %H:%M'),
+            'opponent': m.opponent,
+            'location': m.location,
+            'is_signed_up': !!signup,
+            'participants': signup_names
+        })
+    return jsonify(results)
+
+@app.route('/api/matches', methods=['POST'])
+@token_required
+@role_required(['captain'])
+def create_match(current_user):
+    data = request.get_json()
+    new_m = Match(
+        match_time=datetime.datetime.strptime(data['match_time'], '%Y-%m-%d %H:%M'),
+        opponent=data['opponent'],
+        location=data['location']
+    )
+    db.session.add(new_m)
+    db.session.commit()
+    return jsonify({'message': 'Match created'})
+
+@app.route('/api/matches/<int:match_id>/signup', methods=['POST'])
+@token_required
+def signup_match(current_user, match_id):
+    # 自动使用用户的实名和学号
+    if not current_user.real_name or not current_user.student_id:
+        return jsonify({'message': 'Please complete your profile (Real Name & Student ID) first'}), 400
+        
+    existing = MatchSignup.query.filter_by(match_id=match_id, user_id=current_user.id).first()
+    if existing:
+        return jsonify({'message': 'Already signed up'}), 400
+        
+    signup = MatchSignup(
+        match_id=match_id,
+        user_id=current_user.id,
+        real_name=current_user.real_name,
+        student_id=current_user.student_id
+    )
+    db.session.add(signup)
+    db.session.commit()
+    return jsonify({'message': 'Signed up successfully'})
+
+# --- 3. 场地预约模块 ---
+
+@app.route('/api/venues', methods=['GET'])
+@token_required
+def get_venues(current_user):
+    venues = Venue.query.order_by(Venue.start_time.desc()).all()
+    return jsonify([{
+        'id': v.id,
+        'start_time': v.start_time.strftime('%Y-%m-%d %H:%M'),
+        'end_time': v.end_time.strftime('%Y-%m-%d %H:%M'),
+        'proof_photo_url': v.proof_photo_url
+    } for v in venues])
+
+@app.route('/api/venues', methods=['POST'])
+@token_required
+@role_required(['captain', 'manager']) # 队长和经理修改
+def create_venue(current_user):
+    data = request.get_json()
+    new_v = Venue(
+        start_time=datetime.datetime.strptime(data['start_time'], '%Y-%m-%d %H:%M'),
+        end_time=datetime.datetime.strptime(data['end_time'], '%Y-%m-%d %H:%M'),
+        proof_photo_url=data.get('proof_photo_url'),
+        updated_by=current_user.id
+    )
+    db.session.add(new_v)
+    db.session.commit()
+    return jsonify({'message': 'Venue reservation updated'})
+
+# --- 4. 风采展示 & 5. 个人训练 (简化：共用图片逻辑) ---
+
+@app.route('/api/photos', methods=['GET'])
+@token_required
+def get_photos(current_user):
+    photos = TeamPhoto.query.order_by(TeamPhoto.uploaded_at.desc()).all()
+    return jsonify([{'id': p.id, 'url': p.photo_url, 'description': p.description} for p in photos])
+
+@app.route('/api/photos', methods=['POST'])
+@token_required
+@role_required(['captain'])
+def upload_team_photo(current_user):
+    data = request.get_json()
+    new_p = TeamPhoto(photo_url=data['url'], description=data.get('description'))
+    db.session.add(new_p)
+    db.session.commit()
+    return jsonify({'message': 'Photo uploaded'})
+
+@app.route('/api/personal_trainings', methods=['POST'])
+@token_required
+def log_personal_training(current_user):
+    data = request.get_json()
+    log = PersonalTraining(
+        user_id=current_user.id,
+        item_name=data['item_name'],
+        photo_url=data.get('photo_url')
+    )
+    db.session.add(log)
+    db.session.commit()
+    return jsonify({'message': 'Training logged'})
+
+@app.route('/api/personal_trainings', methods=['GET'])
+@token_required
+def get_personal_trainings(current_user):
+    # 队长和教练看所有，队员看自己
+    if current_user.role in ['captain', 'coach']:
+        logs = PersonalTraining.query.order_by(PersonalTraining.created_at.desc()).all()
+    else:
+        logs = PersonalTraining.query.filter_by(user_id=current_user.id).order_by(PersonalTraining.created_at.desc()).all()
+        
+    return jsonify([{
+        'id': l.id,
+        'username': l.user.username,
+        'real_name': l.user.real_name,
+        'item_name': l.item_name,
+        'photo_url': l.photo_url,
+        'timestamp': l.created_at.strftime('%Y-%m-%d %H:%M')
+    } for l in logs])
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
