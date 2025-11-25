@@ -11,8 +11,8 @@ import {
 } from 'recharts';
 import CanvasDraw from "react-canvas-draw";
 
-// --- Configuration: Basketball Court Background (Base64 SVG) ---
-const COURT_SVG = `
+// --- Configuration: Basketball Court Background ---
+const COURT_SVG_RAW = `
 <svg width="800" height="600" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600" style="background-color:#e6cfa3;">
   <rect x="0" y="0" width="800" height="600" fill="#e6cfa3" />
   <rect x="40" y="40" width="720" height="520" fill="none" stroke="#fff" stroke-width="4" />
@@ -26,9 +26,8 @@ const COURT_SVG = `
   <path d="M 760,50 Q 500,300 760,550" fill="none" stroke="#fff" stroke-width="4" />
   <circle cx="90" cy="300" r="8" fill="none" stroke="#ec7c26" stroke-width="3" />
   <circle cx="710" cy="300" r="8" fill="none" stroke="#ec7c26" stroke-width="3" />
-</svg>
-`;
-const COURT_BG_BASE64 = "data:image/svg+xml;base64," + btoa(COURT_SVG);
+</svg>`;
+const COURT_BG_DATA_URL = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(COURT_SVG_RAW)}`;
 
 // --- Axios Config ---
 const api = axios.create({ baseURL: '/api' });
@@ -119,23 +118,26 @@ const Login = ({ onLogin, isDark, toggleTheme }) => {
     );
 };
 
-// --- Tactical Board (修复版) ---
+// --- Tactical Board (关键修复) ---
 const TacticalBoard = ({ user, theme, isVisible }) => {
     const canvasRef = useRef(null);
     const containerRef = useRef(null);
     const [color, setColor] = useState("#ff0000");
     const [brushRadius, setBrushRadius] = useState(3);
     const [isSaving, setIsSaving] = useState(false);
-    const [dimensions, setDimensions] = useState({ width: 800, height: 600 });
+    const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
 
     useEffect(() => {
         if (isVisible && containerRef.current) {
-            setTimeout(() => {
+            const updateSize = () => {
                 setDimensions({
                     width: containerRef.current.offsetWidth,
-                    height: containerRef.current.offsetHeight || 600
+                    height: containerRef.current.offsetHeight
                 });
-            }, 100);
+            };
+            setTimeout(updateSize, 100);
+            window.addEventListener('resize', updateSize);
+            return () => window.removeEventListener('resize', updateSize);
         }
     }, [isVisible]);
 
@@ -148,46 +150,52 @@ const TacticalBoard = ({ user, theme, isVisible }) => {
             tempCanvas.height = dimensions.height;
             const ctx = tempCanvas.getContext('2d');
 
-            // 1. 先画底图
+            // 1. 绘制底图 (移除 crossOrigin 避免 Tainted 错误)
             const bgImg = new Image();
-            bgImg.src = COURT_BG_BASE64;
-            await new Promise((resolve) => {
+            // bgImg.crossOrigin = "anonymous"; // [修复] Data URL 不需要这个，反而会报错
+            bgImg.src = COURT_BG_DATA_URL;
+            await new Promise((resolve, reject) => {
                 bgImg.onload = resolve;
-                bgImg.onerror = resolve; // 防止加载失败卡死
+                bgImg.onerror = reject;
             });
             ctx.drawImage(bgImg, 0, 0, dimensions.width, dimensions.height);
 
-            // 2. 获取线条 (关键：指定 background 为 rgba(0,0,0,0) 透明)
+            // 2. 绘制线条
             const linesData = canvasRef.current.getDataURL("image/png", false, "rgba(0,0,0,0)");
             const linesImg = new Image();
             linesImg.src = linesData;
             await new Promise((resolve) => {
                 linesImg.onload = resolve;
-                linesImg.onerror = resolve;
             });
-
-            // 3. 画线条
             ctx.drawImage(linesImg, 0, 0, dimensions.width, dimensions.height);
 
             tempCanvas.toBlob(async (blob) => {
-                if (!blob) { alert("生成图片失败"); setIsSaving(false); return; }
+                if (!blob) {
+                    alert("图片生成失败 (Blob is null)");
+                    setIsSaving(false);
+                    return;
+                }
                 const file = new File([blob], `tactics_${Date.now()}.png`, { type: "image/png" });
 
                 const formData = new FormData();
                 formData.append('file', file);
-                const uploadRes = await api.post('/upload', formData, { headers: { 'Content-Type': 'multipart/form-data' } });
+
+                const uploadRes = await api.post('/upload', formData, {
+                    headers: { 'Content-Type': 'multipart/form-data' }
+                });
 
                 await api.post('/photos', {
-                    url: uploadRes.data.url,
+                    url: uploadRes.data.url, // 这里会返回 /api/uploads/...
                     description: `战术板 - 由 ${user.real_name} 绘制`
                 });
+
                 alert("战术已保存到【风采展示】！");
                 setIsSaving(false);
             }, 'image/png');
 
         } catch (e) {
-            console.error(e);
-            alert("保存失败");
+            console.error("Save failed:", e);
+            alert("保存失败: " + e.message); // 显示具体错误
             setIsSaving(false);
         }
     };
@@ -219,29 +227,28 @@ const TacticalBoard = ({ user, theme, isVisible }) => {
                 </div>
 
                 <div ref={containerRef} className={`flex-1 ${theme.card} p-1 rounded overflow-hidden border-4 ${theme.accentBorder} relative bg-gray-100 min-h-[500px]`}>
-                    {/* 底图层 */}
                     <div className="absolute inset-0 pointer-events-none" style={{
-                        backgroundImage: `url('${COURT_BG_BASE64}')`,
+                        backgroundImage: `url('${COURT_BG_DATA_URL}')`,
                         backgroundSize: '100% 100%',
                         backgroundRepeat: 'no-repeat',
                         zIndex: 0
                     }}></div>
 
-                    {/* 绘图层: 关键是 backgroundColor="rgba(0,0,0,0)" 和 zIndex */}
                     {dimensions.width > 0 && (
                         <div className="absolute inset-0" style={{ zIndex: 10 }}>
                             <CanvasDraw
+                                key={dimensions.width}
                                 ref={canvasRef}
                                 brushColor={color}
                                 brushRadius={brushRadius}
-                                lazyRadius={0}
-                                catenaryColor={color} // 让拖拽线也同色
+                                lazyRadius={1}
+                                catenaryColor={color}
                                 canvasWidth={dimensions.width}
                                 canvasHeight={dimensions.height}
                                 hideGrid={true}
-                                enablePanAndZoom={false} // 禁用平移缩放，防止冲突
-                                backgroundColor="rgba(0,0,0,0)" // 透明背景
-                                style={{ background: 'transparent' }}
+                                enablePanAndZoom={false}
+                                backgroundColor="rgba(0,0,0,0)"
+                                style={{ background: 'transparent', width: '100%', height: '100%' }}
                             />
                         </div>
                     )}
@@ -251,15 +258,13 @@ const TacticalBoard = ({ user, theme, isVisible }) => {
     );
 };
 
-// --- Training Module (找回请假功能版) ---
 const TrainingModule = ({ user, theme }) => {
     const [trainings, setTrainings] = useState([]);
     const [showForm, setShowForm] = useState(false);
-    const [showLeaveForm, setShowLeaveForm] = useState(false); // 找回状态
-    const [leaveData, setLeaveData] = useState({ training_id: '', duration_hours: '', reason: '' }); // 找回数据
+    const [showLeaveForm, setShowLeaveForm] = useState(false);
+    const [leaveData, setLeaveData] = useState({ training_id: '', duration_hours: '', reason: '' });
     const [formData, setFormData] = useState({ start_time: '', end_time: '' });
     const [planItems, setPlanItems] = useState(['']);
-
     const canEdit = user.role === 'captain';
     const canLeave = ['player', 'captain', 'manager'].includes(user.role);
 
@@ -274,13 +279,13 @@ const TrainingModule = ({ user, theme }) => {
         setShowForm(false); setPlanItems(['']); setFormData({ start_time: '', end_time: '' }); fetchData();
     };
 
-    // 找回请假处理函数
     const handleLeave = async (e) => {
         e.preventDefault();
         try {
             await api.post('/leaves', leaveData);
-            alert("请假申请已提交");
+            alert("请假申请提交成功！");
             setShowLeaveForm(false);
+            setLeaveData({ training_id: '', duration_hours: '', reason: '' });
         } catch (err) {
             alert('提交失败: ' + (err.response?.data?.message || err.message));
         }
@@ -297,33 +302,48 @@ const TrainingModule = ({ user, theme }) => {
                 <h2 className="text-3xl font-bold">日常训练计划</h2>
                 <div className="flex gap-2">
                     <button onClick={fetchData} className={`${theme.secondaryBtn} p-2 rounded`} title="刷新"><RotateCcw size={16} /></button>
-                    {/* 找回请假按钮 */}
-                    {canLeave && <button onClick={() => setShowLeaveForm(!showLeaveForm)} className={`${theme.secondaryBtn} px-4 py-2 rounded flex items-center gap-2`}><FileText size={16} /> 请假申请</button>}
-                    {canEdit && <button onClick={() => setShowForm(!showForm)} className={`${theme.primaryBtn} px-4 py-2 rounded flex items-center gap-2`}><Plus size={16} /> 发布</button>}
+                    {canLeave && (
+                        <button onClick={() => setShowLeaveForm(!showLeaveForm)} className={`${theme.secondaryBtn} px-4 py-2 rounded flex items-center gap-2`}>
+                            <FileText size={16} /> 请假申请
+                        </button>
+                    )}
+                    {canEdit && (
+                        <button onClick={() => setShowForm(!showForm)} className={`${theme.primaryBtn} px-4 py-2 rounded flex items-center gap-2`}>
+                            <Plus size={16} /> 发布
+                        </button>
+                    )}
                 </div>
             </div>
 
-            {/* 找回请假表单 */}
             {showLeaveForm && (
-                <form onSubmit={handleLeave} className={`${theme.card} p-6 rounded mb-6 border border-yellow-400`}>
-                    <h3 className="font-bold mb-4">提交请假申请</h3>
-                    <div className="grid grid-cols-2 gap-4 mb-4">
+                <form onSubmit={handleLeave} className={`${theme.card} p-6 rounded mb-6 border border-yellow-400 shadow-md`}>
+                    <h3 className="font-bold mb-4 text-lg border-b pb-2">填写请假条</h3>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
                         <div>
                             <label className="text-xs mb-1 block text-gray-500">时长 (小时)</label>
-                            <input type="number" placeholder="0.0" step="0.5" className={`w-full p-2 rounded ${theme.input}`} required onChange={e => setLeaveData({ ...leaveData, duration_hours: e.target.value })} />
+                            <input type="number" placeholder="2.0" step="0.5" className={`w-full p-2 rounded ${theme.input}`} required
+                                value={leaveData.duration_hours}
+                                onChange={e => setLeaveData({ ...leaveData, duration_hours: e.target.value })} />
                         </div>
                         <div>
-                            <label className="text-xs mb-1 block text-gray-500">相关场次</label>
-                            <select className={`w-full p-2 rounded ${theme.input}`} onChange={e => setLeaveData({ ...leaveData, training_id: e.target.value })}>
-                                <option value="">通用/其他</option>
-                                {trainings.map(t => <option key={t.id} value={t.id}>{t.start_time}</option>)}
+                            <label className="text-xs mb-1 block text-gray-500">关联训练 (可选)</label>
+                            <select className={`w-full p-2 rounded ${theme.input}`}
+                                value={leaveData.training_id}
+                                onChange={e => setLeaveData({ ...leaveData, training_id: e.target.value })}>
+                                <option value="">-- 通用/其他 --</option>
+                                {trainings.map(t => <option key={t.id} value={t.id}>{t.start_time} 的训练</option>)}
                             </select>
                         </div>
                     </div>
-                    <textarea placeholder="请假原因..." className={`w-full p-2 rounded mb-4 ${theme.input}`} rows="2" required onChange={e => setLeaveData({ ...leaveData, reason: e.target.value })}></textarea>
+                    <div className="mb-4">
+                        <label className="text-xs mb-1 block text-gray-500">请假原因</label>
+                        <textarea placeholder="例如：身体不适 / 课程冲突" className={`w-full p-2 rounded ${theme.input}`} rows="3" required
+                            value={leaveData.reason}
+                            onChange={e => setLeaveData({ ...leaveData, reason: e.target.value })}></textarea>
+                    </div>
                     <div className="flex justify-end gap-2">
-                        <button type="button" onClick={() => setShowLeaveForm(false)} className="px-4 py-2 text-gray-500">取消</button>
-                        <button type="submit" className={`${theme.primaryBtn} px-6 py-2 rounded`}>提交</button>
+                        <button type="button" onClick={() => setShowLeaveForm(false)} className="px-4 py-2 text-gray-500 hover:text-gray-700">取消</button>
+                        <button type="submit" className={`${theme.primaryBtn} px-6 py-2 rounded font-bold`}>提交申请</button>
                     </div>
                 </form>
             )}
