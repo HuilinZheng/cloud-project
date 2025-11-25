@@ -72,5 +72,5 @@ services:
         condition: service_completed_successfully # 建议修改：等待前端构建完成再启动 Nginx
 
 volumes:
-  db_data:
+
   frontend_dist_data:

@@ -172,22 +172,32 @@ def get_trainings(current_user):
         'plan_content': t.plan_content
     } for t in trainings])
 
+# 注意：这里只保留这一个 create_training 函数
 @app.route('/api/trainings', methods=['POST'])
 @token_required
 @role_required(['captain'])
 def create_training(current_user):
     data = request.get_json()
     try:
+        # 容错处理：不管前端发来的是 "2023-10-25 14:30" 还是 "2023-10-25T14:30"
+        start_str = data['start_time'].replace('T', ' ')
+        end_str = data['end_time'].replace('T', ' ')
+        
         new_t = Training(
-            start_time=datetime.datetime.strptime(data['start_time'], '%Y-%m-%d %H:%M'),
-            end_time=datetime.datetime.strptime(data['end_time'], '%Y-%m-%d %H:%M'),
+            start_time=datetime.datetime.strptime(start_str, '%Y-%m-%d %H:%M'),
+            end_time=datetime.datetime.strptime(end_str, '%Y-%m-%d %H:%M'),
             plan_content=data['plan_content']
         )
         db.session.add(new_t)
         db.session.commit()
         return jsonify({'message': 'Training created'})
-    except ValueError:
+    except ValueError as e:
+        print(f"Date Error: {e}") 
         return jsonify({'message': 'Invalid date format'}), 400
+    except Exception as e:
+        print(f"Error: {e}")
+        db.session.rollback()
+        return jsonify({'message': str(e)}), 500
 
 @app.route('/api/trainings/<int:training_id>', methods=['DELETE'])
 @token_required
@@ -266,8 +276,11 @@ def get_matches(current_user):
 def create_match(current_user):
     data = request.get_json()
     try:
+        # 同样加上时间格式容错处理
+        match_time_str = data['match_time'].replace('T', ' ')
+        
         new_m = Match(
-            match_time=datetime.datetime.strptime(data['match_time'], '%Y-%m-%d %H:%M'),
+            match_time=datetime.datetime.strptime(match_time_str, '%Y-%m-%d %H:%M'),
             opponent=data['opponent'],
             location=data['location']
         )
@@ -276,7 +289,7 @@ def create_match(current_user):
         return jsonify({'message': 'Match created'})
     except ValueError:
         return jsonify({'message': 'Invalid date format'}), 400
-
+        
 @app.route('/api/matches/<int:match_id>', methods=['DELETE'])
 @token_required
 @role_required(['captain'])
@@ -284,13 +297,19 @@ def delete_match(current_user, match_id):
     m = Match.query.get(match_id)
     if not m: return jsonify({'message': 'Not found'}), 404
     
-    # 级联删除：先删除报名记录和请假记录
-    MatchSignup.query.filter_by(match_id=match_id).delete()
-    Leave.query.filter_by(match_id=match_id).delete()
-    
-    db.session.delete(m)
-    db.session.commit()
-    return jsonify({'message': 'Deleted successfully'})
+    try:
+        # 级联删除：使用 synchronize_session=False 防止 Session 过期报错
+        MatchSignup.query.filter_by(match_id=match_id).delete(synchronize_session=False)
+        Leave.query.filter_by(match_id=match_id).delete(synchronize_session=False)
+        
+        db.session.commit() # 提交子记录删除
+        
+        db.session.delete(m)
+        db.session.commit() # 提交主记录删除
+        return jsonify({'message': 'Deleted successfully'})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'message': str(e)}), 500
 
 @app.route('/api/matches/<int:match_id>/signup', methods=['POST'])
 @token_required
