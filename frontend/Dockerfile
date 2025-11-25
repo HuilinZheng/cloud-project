@@ -27,7 +27,7 @@ COPY package*.json ./
 
 # 安装项目的所有依赖。由于之前设置了代理环境变量，如果需要，npm 会通过代理下载依赖。
 # --registry=https://registry.npmmirror.com 可以用于指定一个自定义的 npm 镜像源，如果默认源访问慢或被墙。
-RUN npm install
+RUN npm install --legacy-peer-deps
 # RUN npm install --registry=https://registry.npmmirror.com 
 
 # 复制项目的其余所有文件到工作目录。

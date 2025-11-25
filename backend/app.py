@@ -3,9 +3,10 @@ import datetime
 import json
 import jwt
 from functools import wraps
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_from_directory
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.utils import secure_filename
 from flask_cors import CORS
 from config import Config
 
@@ -13,6 +14,12 @@ app = Flask(__name__)
 app.config.from_object(Config)
 CORS(app)
 db = SQLAlchemy(app)
+
+# 配置上传文件夹
+UPLOAD_FOLDER = os.path.join(os.getcwd(), 'uploaded_files')
+if not os.path.exists(UPLOAD_FOLDER):
+    os.makedirs(UPLOAD_FOLDER)
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
 # --- Models ---
 
@@ -38,6 +45,10 @@ class Match(db.Model):
     match_time = db.Column(db.DateTime, nullable=False)
     opponent = db.Column(db.String(100))
     location = db.Column(db.String(100))
+    # 新增字段：比分和状态
+    our_score = db.Column(db.Integer, default=0)
+    opponent_score = db.Column(db.Integer, default=0)
+    is_finished = db.Column(db.Boolean, default=False)
 
 class Leave(db.Model):
     __tablename__ = 'leaves'
@@ -74,6 +85,7 @@ class TeamPhoto(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     photo_url = db.Column(db.Text, nullable=False)
     description = db.Column(db.Text)
+    uploaded_at = db.Column(db.DateTime, default=datetime.datetime.utcnow) # 确保有时间字段
 
 class PersonalTraining(db.Model):
     __tablename__ = 'personal_trainings'
@@ -114,6 +126,71 @@ def role_required(roles):
 
 # --- Routes ---
 
+# 0. 文件上传与服务
+@app.route('/uploads/<filename>')
+def uploaded_file(filename):
+    return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
+
+@app.route('/api/upload', methods=['POST'])
+@token_required
+def upload_file(current_user):
+    if 'file' not in request.files:
+        return jsonify({'message': 'No file part'}), 400
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'message': 'No selected file'}), 400
+    if file:
+        filename = secure_filename(f"{int(datetime.datetime.now().timestamp())}_{file.filename}")
+        file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+        # 返回完整的访问 URL (这里假设前端通过 /uploads 访问，生产环境可能需要完整域名)
+        file_url = f"/uploads/{filename}" 
+        return jsonify({'url': file_url})
+
+# 1. 仪表盘统计数据
+@app.route('/api/dashboard/stats', methods=['GET'])
+@token_required
+def get_dashboard_stats(current_user):
+    # A. 个人打卡排行榜 (Top 5)
+    # 使用 SQLAlchemy 聚合查询
+    leaderboard_query = db.session.query(
+        User.real_name, 
+        db.func.count(PersonalTraining.id).label('count')
+    ).join(PersonalTraining).group_by(User.id).order_by(db.desc('count')).limit(5).all()
+    
+    leaderboard = [{'name': name, 'count': count} for name, count in leaderboard_query]
+
+    # B. 出勤概况 (估算)
+    # 假设总出勤人次 = 队员总数 * 训练总数 (简化模型，未剔除退队人员)
+    total_players = User.query.filter_by(role='player').count() + User.query.filter_by(role='captain').count()
+    total_trainings = Training.query.count()
+    total_leaves = Leave.query.filter(Leave.training_id != None).count()
+    
+    total_possible = total_players * total_trainings if total_players > 0 else 1
+    attendance_rate = 0
+    if total_possible > 0:
+        attendance_rate = round(((total_possible - total_leaves) / total_possible) * 100, 1)
+
+    # C. 比赛走势
+    matches = Match.query.filter_by(is_finished=True).order_by(Match.match_time).limit(10).all()
+    match_trend = [{
+        'date': m.match_time.strftime('%m-%d'),
+        'opponent': m.opponent,
+        'our_score': m.our_score,
+        'opponent_score': m.opponent_score,
+        'result': 'Win' if m.our_score > m.opponent_score else ('Loss' if m.our_score < m.opponent_score else 'Draw')
+    } for m in matches]
+
+    return jsonify({
+        'leaderboard': leaderboard,
+        'attendance': {
+            'rate': attendance_rate,
+            'leaves': total_leaves,
+            'total_trainings': total_trainings
+        },
+        'match_trend': match_trend
+    })
+
+# ... (Standard Auth Routes) ...
 @app.route('/api/ping', methods=['GET'])
 def ping():
     return jsonify({'status': 'ok', 'message': 'Basketball System Online'})
@@ -159,7 +236,7 @@ def login():
         }
     })
 
-# --- 1. 日常训练模块 ---
+# --- 2. 日常训练 ---
 
 @app.route('/api/trainings', methods=['GET'])
 @token_required
@@ -172,17 +249,14 @@ def get_trainings(current_user):
         'plan_content': t.plan_content
     } for t in trainings])
 
-# 注意：这里只保留这一个 create_training 函数
 @app.route('/api/trainings', methods=['POST'])
 @token_required
 @role_required(['captain'])
 def create_training(current_user):
     data = request.get_json()
     try:
-        # 容错处理：不管前端发来的是 "2023-10-25 14:30" 还是 "2023-10-25T14:30"
         start_str = data['start_time'].replace('T', ' ')
         end_str = data['end_time'].replace('T', ' ')
-        
         new_t = Training(
             start_time=datetime.datetime.strptime(start_str, '%Y-%m-%d %H:%M'),
             end_time=datetime.datetime.strptime(end_str, '%Y-%m-%d %H:%M'),
@@ -191,11 +265,7 @@ def create_training(current_user):
         db.session.add(new_t)
         db.session.commit()
         return jsonify({'message': 'Training created'})
-    except ValueError as e:
-        print(f"Date Error: {e}") 
-        return jsonify({'message': 'Invalid date format'}), 400
     except Exception as e:
-        print(f"Error: {e}")
         db.session.rollback()
         return jsonify({'message': str(e)}), 500
 
@@ -205,10 +275,7 @@ def create_training(current_user):
 def delete_training(current_user, training_id):
     t = Training.query.get(training_id)
     if not t: return jsonify({'message': 'Not found'}), 404
-    
-    # 级联删除：先删除关联的请假条
     Leave.query.filter_by(training_id=training_id).delete()
-    
     db.session.delete(t)
     db.session.commit()
     return jsonify({'message': 'Deleted successfully'})
@@ -236,7 +303,6 @@ def get_leaves(current_user):
         leaves = Leave.query.order_by(Leave.created_at.desc()).all()
     else:
         leaves = Leave.query.filter_by(user_id=current_user.id).order_by(Leave.created_at.desc()).all()
-        
     return jsonify([{
         'id': l.id,
         'username': l.user.username,
@@ -248,7 +314,7 @@ def get_leaves(current_user):
         'related_info': (l.match.opponent if l.match_id else (l.training.start_time.strftime('%m-%d') if l.training_id else '-'))
     } for l in leaves])
 
-# --- 2. 比赛事宜模块 ---
+# --- 3. 比赛事宜 ---
 
 @app.route('/api/matches', methods=['GET'])
 @token_required
@@ -266,7 +332,10 @@ def get_matches(current_user):
             'opponent': m.opponent,
             'location': m.location,
             'is_signed_up': bool(signup),
-            'participants': signup_names
+            'participants': signup_names,
+            'our_score': m.our_score,
+            'opponent_score': m.opponent_score,
+            'is_finished': m.is_finished
         })
     return jsonify(results)
 
@@ -276,9 +345,7 @@ def get_matches(current_user):
 def create_match(current_user):
     data = request.get_json()
     try:
-        # 同样加上时间格式容错处理
         match_time_str = data['match_time'].replace('T', ' ')
-        
         new_m = Match(
             match_time=datetime.datetime.strptime(match_time_str, '%Y-%m-%d %H:%M'),
             opponent=data['opponent'],
@@ -289,23 +356,34 @@ def create_match(current_user):
         return jsonify({'message': 'Match created'})
     except ValueError:
         return jsonify({'message': 'Invalid date format'}), 400
-        
+
+@app.route('/api/matches/<int:match_id>', methods=['PUT'])
+@token_required
+@role_required(['captain'])
+def update_match(current_user, match_id):
+    m = Match.query.get(match_id)
+    if not m: return jsonify({'message': 'Not found'}), 404
+    
+    data = request.get_json()
+    if 'our_score' in data: m.our_score = data['our_score']
+    if 'opponent_score' in data: m.opponent_score = data['opponent_score']
+    if 'is_finished' in data: m.is_finished = data['is_finished']
+    
+    db.session.commit()
+    return jsonify({'message': 'Match updated'})
+
 @app.route('/api/matches/<int:match_id>', methods=['DELETE'])
 @token_required
 @role_required(['captain'])
 def delete_match(current_user, match_id):
     m = Match.query.get(match_id)
     if not m: return jsonify({'message': 'Not found'}), 404
-    
     try:
-        # 级联删除：使用 synchronize_session=False 防止 Session 过期报错
         MatchSignup.query.filter_by(match_id=match_id).delete(synchronize_session=False)
         Leave.query.filter_by(match_id=match_id).delete(synchronize_session=False)
-        
-        db.session.commit() # 提交子记录删除
-        
+        db.session.commit()
         db.session.delete(m)
-        db.session.commit() # 提交主记录删除
+        db.session.commit()
         return jsonify({'message': 'Deleted successfully'})
     except Exception as e:
         db.session.rollback()
@@ -316,14 +394,11 @@ def delete_match(current_user, match_id):
 def signup_match(current_user, match_id):
     if current_user.role not in ['player', 'captain']:
         return jsonify({'message': 'Role not allowed to play'}), 403
-
     if not current_user.real_name or not current_user.student_id:
-        return jsonify({'message': 'Please complete profile first'}), 400
-        
+        return jsonify({'message': 'Please complete profile first'}), 400 
     existing = MatchSignup.query.filter_by(match_id=match_id, user_id=current_user.id).first()
     if existing:
-        return jsonify({'message': 'Already signed up'}), 400
-        
+        return jsonify({'message': 'Already signed up'}), 400 
     signup = MatchSignup(
         match_id=match_id,
         user_id=current_user.id,
@@ -334,7 +409,7 @@ def signup_match(current_user, match_id):
     db.session.commit()
     return jsonify({'message': 'Signed up successfully'})
 
-# --- 3. 场地预约模块 ---
+# --- 4. 场地预约 ---
 
 @app.route('/api/venues', methods=['GET'])
 @token_required
@@ -365,11 +440,12 @@ def create_venue(current_user):
     except ValueError:
         return jsonify({'message': 'Invalid date format'}), 400
 
-# --- 4. 风采 & 5. 个人打卡 ---
+# --- 5. 风采 & 个人打卡 ---
 
 @app.route('/api/photos', methods=['GET'])
 @token_required
 def get_photos(current_user):
+    # 按上传时间倒序
     photos = TeamPhoto.query.order_by(TeamPhoto.uploaded_at.desc()).all()
     return jsonify([{'id': p.id, 'url': p.photo_url, 'description': p.description} for p in photos])
 
@@ -403,7 +479,6 @@ def get_personal_trainings(current_user):
         logs = PersonalTraining.query.order_by(PersonalTraining.created_at.desc()).all()
     else:
         logs = PersonalTraining.query.filter_by(user_id=current_user.id).order_by(PersonalTraining.created_at.desc()).all()
-        
     return jsonify([{
         'id': l.id,
         'username': l.user.username,
@@ -414,4 +489,8 @@ def get_personal_trainings(current_user):
     } for l in logs])
 
 if __name__ == '__main__':
+    # 注意：生产环境中通常不在这里创建表，而是在部署脚本中
+    # 为了简化，我们尝试创建（不会覆盖现有表，但新列需要迁移）
+   
+
     app.run(host='0.0.0.0', port=5000)
