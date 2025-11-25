@@ -459,6 +459,28 @@ def upload_team_photo(current_user):
     db.session.commit()
     return jsonify({'message': 'Photo uploaded'})
 
+@app.route('/api/photos/<int:photo_id>', methods=['DELETE'])
+@token_required
+@role_required(['captain'])
+def delete_team_photo(current_user, photo_id):
+    photo = TeamPhoto.query.get(photo_id)
+    if not photo:
+        return jsonify({'message': 'Not found'}), 404
+    
+    # 可选：尝试删除服务器上的物理文件
+    try:
+        # 假设 photo_url 格式为 /uploads/filename，提取文件名
+        filename = photo.photo_url.split('/')[-1]
+        file_path = os.path.join(app.config['UPLOAD_FOLDER'], secure_filename(filename))
+        if os.path.exists(file_path):
+            os.remove(file_path)
+    except Exception as e:
+        print(f"Error deleting file: {e}")
+
+    db.session.delete(photo)
+    db.session.commit()
+    return jsonify({'message': 'Deleted successfully'})
+    
 @app.route('/api/personal_trainings', methods=['POST'])
 @token_required
 def log_personal_training(current_user):

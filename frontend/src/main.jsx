@@ -220,9 +220,6 @@ const TacticalBoard = ({ user, theme, isVisible }) => {
                     <div className="mt-auto space-y-2">
                         <button onClick={() => canvasRef.current.undo()} className={`w-full p-2 rounded flex items-center gap-2 ${theme.secondaryBtn}`}><Undo size={16} /> 撤销</button>
                         <button onClick={() => canvasRef.current.clear()} className={`w-full p-2 rounded flex items-center gap-2 text-red-500 bg-red-100 hover:bg-red-200`}><Eraser size={16} /> 清空</button>
-                        <button onClick={handleSave} disabled={isSaving} className={`w-full p-2 rounded flex items-center gap-2 ${theme.primaryBtn}`}>
-                            {isSaving ? '保存中...' : <><Save size={16} /> 保存</>}
-                        </button>
                     </div>
                 </div>
 
@@ -254,7 +251,7 @@ const TacticalBoard = ({ user, theme, isVisible }) => {
                     )}
                 </div>
             </div>
-        </div>
+        </div >
     );
 };
 
@@ -492,14 +489,53 @@ const VenueModule = ({ user, theme }) => {
 const PhotoModule = ({ user, theme }) => {
     const [photos, setPhotos] = useState([]);
     const [url, setUrl] = useState('');
+
     const fetchPhotos = async () => { try { setPhotos((await api.get('/photos')).data); } catch { } };
+
     useEffect(() => { fetchPhotos(); }, []);
+
     const handleUpload = async (e) => { e.preventDefault(); await api.post('/photos', { url, description: 'Team moment' }); setUrl(''); fetchPhotos(); };
+
+    // 新增：删除处理函数
+    const handleDelete = async (id) => {
+        if (confirm('确定要删除这张照片吗？')) {
+            try {
+                await api.delete(`/photos/${id}`);
+                fetchPhotos();
+            } catch (e) {
+                alert('删除失败: ' + (e.response?.data?.message || '未知错误'));
+            }
+        }
+    };
+
     return (
         <div>
             <h2 className="text-3xl font-bold mb-6">风采展示墙</h2>
-            {user.role === 'captain' && <form onSubmit={handleUpload} className="mb-8 flex gap-2"><input type="text" placeholder="URL..." className={`flex-1 p-2 rounded ${theme.input}`} value={url} onChange={e => setUrl(e.target.value)} required /><button type="submit" className={`${theme.primaryBtn} px-4 rounded`}>上传</button></form>}
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-4">{photos.map(p => (<div key={p.id} className={`aspect-square ${theme.card} rounded overflow-hidden relative group`}><img src={p.url} className="w-full h-full object-cover" /><div className="absolute bottom-0 w-full bg-black/50 text-white text-xs p-1 truncate">{p.description}</div></div>))}</div>
+            {user.role === 'captain' && (
+                <form onSubmit={handleUpload} className="mb-8 flex gap-2">
+                    <input type="text" placeholder="URL..." className={`flex-1 p-2 rounded ${theme.input}`} value={url} onChange={e => setUrl(e.target.value)} required />
+                    <button type="submit" className={`${theme.primaryBtn} px-4 rounded`}>上传</button>
+                </form>
+            )}
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+                {photos.map(p => (
+                    <div key={p.id} className={`aspect-square ${theme.card} rounded overflow-hidden relative group`}>
+                        <img src={p.url} className="w-full h-full object-cover" />
+                        <div className="absolute bottom-0 w-full bg-black/50 text-white text-xs p-1 truncate">{p.description}</div>
+
+                        {/* 新增：只有队长可以看到的删除按钮 */}
+                        {user.role === 'captain' && (
+                            <button
+                                onClick={(e) => { e.stopPropagation(); handleDelete(p.id); }}
+                                className="absolute top-2 right-2 bg-red-600 text-white p-1.5 rounded-full opacity-0 group-hover:opacity-100 transition-opacity shadow-sm hover:bg-red-700"
+                                title="删除照片"
+                            >
+                                <Trash2 size={16} />
+                            </button>
+                        )}
+                    </div>
+                ))}
+            </div>
         </div>
     );
 };

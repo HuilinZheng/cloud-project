@@ -33,6 +33,11 @@ services:
       DB_USER: root
       DB_PASS: mynode12345!
       FLASK_ENV: production
+      OBS_ACCESS_KEY: "HPUAKSNACNMBRLSPQU76"
+      OBS_SECRET_KEY: "8FKd7kMhXmxPfk6JyCRKHtR4wQ60GoTmmt5hLqPj"
+      # 下面两个已有默认值，但建议显式写上以防万一
+      OBS_BUCKET_NAME: "obs-baskb"
+      OBS_ENDPOINT: "obs.cn-north-4.myhuaweicloud.com"
     ports:
       - "5089:5000"
     healthcheck:

@@ -27,3 +27,11 @@ class Config:
     # Flask 环境配置
     FLASK_ENV = config('FLASK_ENV', default='development')
     DEBUG = config('FLASK_DEBUG', default='True', cast=bool) # 转换为布尔值
+    
+    # --- 新增 OBS 配置 (请添加到文件末尾) ---
+    OBS_ACCESS_KEY = config('OBS_ACCESS_KEY', default='')
+    OBS_SECRET_KEY = config('OBS_SECRET_KEY', default='')
+    # 这里直接填你刚才创建的 Endpoint
+    OBS_ENDPOINT = config('OBS_ENDPOINT', default='obs.cn-north-4.myhuaweicloud.com')
+    # 这里直接填你刚才创建的桶名
+    OBS_BUCKET_NAME = config('OBS_BUCKET_NAME', default='obs-baskb')
