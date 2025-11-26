@@ -17,7 +17,7 @@ WORKDIR /app
 # 将 requirements.txt 复制到工作目录中
 COPY requirements.txt .
 
-# --- 修改点 1：保持使用阿里云 Debian 归档源 (这对你的国内构建环境至关重要) ---
+# --- 修改点 1：保持使用阿里云 Debian 归档源  ---
 RUN rm -f /etc/apt/sources.list && \
     echo "deb http://mirrors.aliyun.com/debian-archive/debian buster main contrib non-free" > /etc/apt/sources.list && \
     echo "deb http://mirrors.aliyun.com/debian-archive/debian-security buster/updates main contrib non-free" >> /etc/apt/sources.list && \
