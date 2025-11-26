@@ -1,7 +1,4 @@
-# 阶段 1: 构建 Vue 应用 (build-stage)
-# ------------------------------------
-# 这是一个临时的构建阶段，目标是执行 npm install 和 npm run build 命令，
-# 生成 Vue 应用的生产环境静态文件。它不会成为最终运行的镜像。
+
 FROM node:20-alpine AS build-stage
 
 # 接收构建参数，用于在需要代理的网络环境中下载依赖
@@ -34,25 +31,15 @@ RUN npm install --legacy-peer-deps
 # 这一步在安装完依赖之后进行，避免了在文件变动频繁时破坏 npm install 的缓存。
 COPY . .
 
-# 运行 Vue 应用的构建命令。这会根据 package.json 中的 "build" 脚本，
-# 生成生产环境的静态文件，通常会输出到 /app/dist 目录下。
 RUN npm run build 
 
-# 阶段 2: 仅用于输出构建产物 (dist_output)
-# --------------------------------------
-# 这是一个非常轻量级的阶段，它的唯一目的是从上一个 'build-stage' 提取出
-# 构建好的静态文件 (通常是 /app/dist 目录下的内容)。
-# 这样做的好处是最终的生产环境镜像会非常小，因为它不包含 Node.js、npm、
-# 开发依赖（node_modules）等在运行时不需要的东西，只包含 Web 服务器（如 Nginx）和你的前端静态文件。
+
 FROM alpine AS dist_output
 
 # 设置容器内的工作目录为 /app。
 WORKDIR /app
 
-# 将 'build-stage' 阶段中生成的 /app/dist 目录下的所有文件，
-# 复制到当前 (dist_output) 阶段的 /app/dist 目录下。
-# 这一步是多阶段构建的核心：它只复制最终需要的文件，避免了包含 node_modules 等构建时依赖，
-# 从而使得最终的 Nginx 部署镜像更小、更安全。
+
 COPY --from=build-stage /app/dist ./dist
 
 # 定义这个阶段的默认命令。这是一个非常特殊的 CMD。
